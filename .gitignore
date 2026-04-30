@@ -4,3 +4,6 @@ users.json
 messages.json
 .env
 .env.local
+server/.env
+client/.env.local
+node_modules/
