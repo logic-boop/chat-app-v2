@@ -3,12 +3,17 @@ import { useEffect, useState, useRef } from "react";
 import { io } from "socket.io-client";
 import EmojiPicker, { Theme } from "emoji-picker-react";
 
+// Fallback to localhost if the environment variable isn't set
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+
 export default function Home() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [authMode, setAuthMode] = useState("login");
   const [message, setMessage] = useState("");
   const [messageList, setMessageList] = useState([]);
+  const [activeUsers, setActiveUsers] = useState([]); // NEW: Online users state
+  const [typingStatus, setTypingStatus] = useState(""); // NEW: Typing indicator state
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [pickerMode, setPickerMode] = useState("emoji");
@@ -16,6 +21,7 @@ export default function Home() {
 
   const socket = useRef(null);
   const lastMessageRef = useRef(null);
+  const typingTimeoutRef = useRef(null); // Ref to manage typing timeout
 
   const stickers = [
     "/stickers/sticker1.png",
@@ -23,16 +29,22 @@ export default function Home() {
     "/stickers/sticker3.png",
   ];
 
-  // 1. PERSISTENCE: Check localStorage on mount
+  // 1. PERSISTENCE & THEME: Check localStorage on mount
   useEffect(() => {
     const savedTheme = localStorage.getItem("theme");
     if (savedTheme === "dark") {
       setTheme("dark");
       document.documentElement.classList.add("dark");
     }
+
+    const savedToken = localStorage.getItem("chat_token");
+    const savedUser = localStorage.getItem("chat_user");
+    if (savedToken && savedUser) {
+      setUsername(savedUser);
+      setIsLoggedIn(true);
+    }
   }, []);
 
-  // 2. TOGGLE LOGIC: Updated with storage and direct DOM manipulation
   const toggleTheme = () => {
     if (theme === "light") {
       setTheme("dark");
@@ -45,13 +57,28 @@ export default function Home() {
     }
   };
 
+  // 2. SOCKET CONNECTION & EVENT LISTENERS
   useEffect(() => {
-    socket.current = io("http://localhost:3001");
+    if (!isLoggedIn) return;
+
+    socket.current = io(API_URL);
+
+    socket.current.emit("join_chat", username);
 
     socket.current.on("receive_message", (data) => {
       setMessageList((list) => [...list, data]);
-      if (isLoggedIn) {
-        socket.current.emit("mark_as_read", username);
+      setTypingStatus(""); // Clear typing if message received
+    });
+
+    socket.current.on("update_user_list", (users) => {
+      setActiveUsers(users);
+    });
+
+    socket.current.on("display_typing", (data) => {
+      if (data.typing) {
+        setTypingStatus(`${data.user} is typing...`);
+      } else {
+        setTypingStatus("");
       }
     });
 
@@ -64,21 +91,36 @@ export default function Home() {
     });
 
     return () => {
-      socket.current.disconnect();
+      socket.current?.disconnect();
     };
   }, [isLoggedIn, username]);
 
   useEffect(() => {
     lastMessageRef.current?.scrollIntoView({ behavior: "smooth" });
     if (isLoggedIn && messageList.length > 0) {
-      socket.current.emit("mark_as_read", username);
+      socket.current?.emit("mark_as_read", username);
     }
   }, [messageList, isLoggedIn, username]);
 
+  // Handle Typing logic (Debounced)
+  const handleTyping = (e) => {
+    setMessage(e.target.value);
+
+    if (socket.current) {
+      socket.current.emit("typing", { user: username, typing: true });
+
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = setTimeout(() => {
+        socket.current.emit("typing", { user: username, typing: false });
+      }, 2000);
+    }
+  };
+
+  // 3. AUTH LOGIC
   const handleSignup = async () => {
     if (username && password) {
       try {
-        const response = await fetch("http://localhost:3001/signup", {
+        const response = await fetch(`${API_URL}/signup`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username, password }),
@@ -95,15 +137,17 @@ export default function Home() {
   const handleLogin = async () => {
     if (username && password) {
       try {
-        const response = await fetch("http://localhost:3001/login", {
+        const response = await fetch(`${API_URL}/login`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username, password }),
         });
         const data = await response.json();
         if (response.ok) {
+          localStorage.setItem("chat_token", data.token);
+          localStorage.setItem("chat_user", data.username);
+          setUsername(data.username);
           setIsLoggedIn(true);
-          socket.current.emit("join_chat", username);
         } else {
           alert(data.message);
         }
@@ -113,8 +157,14 @@ export default function Home() {
     }
   };
 
+  const handleLogout = () => {
+    localStorage.removeItem("chat_token");
+    localStorage.removeItem("chat_user");
+    window.location.reload();
+  };
+
   const sendMessage = () => {
-    if (message.trim() !== "") {
+    if (message.trim() !== "" && socket.current) {
       const messageData = {
         author: username,
         message: message,
@@ -123,29 +173,30 @@ export default function Home() {
           hour: "2-digit",
           minute: "2-digit",
         }),
-        status: "delivered",
       };
 
       socket.current.emit("send_message", messageData);
+      socket.current.emit("typing", { user: username, typing: false });
       setMessage("");
       setShowEmojiPicker(false);
     }
   };
 
   const sendSticker = (stickerUrl) => {
-    const messageData = {
-      author: username,
-      message: stickerUrl,
-      type: "sticker",
-      time: new Date().toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-      status: "delivered",
-    };
+    if (socket.current) {
+      const messageData = {
+        author: username,
+        message: stickerUrl,
+        type: "sticker",
+        time: new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+      };
 
-    socket.current.emit("send_message", messageData);
-    setShowEmojiPicker(false);
+      socket.current.emit("send_message", messageData);
+      setShowEmojiPicker(false);
+    }
   };
 
   const onEmojiClick = (emojiObject) => {
@@ -166,12 +217,14 @@ export default function Home() {
                   type="text"
                   placeholder="Username"
                   className="block w-full rounded-xl border dark:border-slate-700 bg-transparent dark:text-white p-3 outline-none"
+                  value={username}
                   onChange={(e) => setUsername(e.target.value)}
                 />
                 <input
                   type="password"
                   placeholder="Password"
                   className="block w-full rounded-xl border dark:border-slate-700 bg-transparent dark:text-white p-3 outline-none"
+                  value={password}
                   onChange={(e) => setPassword(e.target.value)}
                 />
                 <button
@@ -202,12 +255,12 @@ export default function Home() {
                 <button
                   onClick={toggleTheme}
                   className="p-1 hover:bg-blue-700 rounded-lg text-lg"
-                  aria-label="Toggle Theme"
                 >
                   {theme === "light" ? "🌙" : "☀️"}
                 </button>
               </div>
               <div className="flex-grow p-4 overflow-y-auto">
+                {/* Global Chat Item */}
                 <div className="flex items-center p-3 bg-gray-100 dark:bg-slate-800 rounded-xl mb-4">
                   <div className="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center text-white font-bold mr-3">
                     G
@@ -222,10 +275,26 @@ export default function Home() {
                     </div>
                   </div>
                 </div>
+
+                {/* Active Users List */}
+                <div className="space-y-2 mt-4">
+                  <p className="text-xs font-bold text-gray-400 uppercase px-2">
+                    Online — {activeUsers.length}
+                  </p>
+                  {activeUsers.map((u) => (
+                    <div
+                      key={u}
+                      className="flex items-center p-2 rounded-lg text-sm dark:text-gray-200"
+                    >
+                      <span className="w-2 h-2 bg-green-500 rounded-full mr-3"></span>
+                      {u === username ? `${u} (You)` : u}
+                    </div>
+                  ))}
+                </div>
               </div>
               <div className="p-4 border-t dark:border-slate-800">
                 <button
-                  onClick={() => window.location.reload()}
+                  onClick={handleLogout}
                   className="w-full text-red-500 font-bold hover:bg-red-50 dark:hover:bg-red-900/20 p-2 rounded-lg"
                 >
                   🚪 Logout
@@ -235,7 +304,7 @@ export default function Home() {
 
             {/* Main Chat Area */}
             <div className="flex flex-1 flex-col h-full relative">
-              <header className="flex items-center p-4 bg-white dark:bg-slate-900 border-b dark:border-slate-800 shadow-sm transition-colors">
+              <header className="flex items-center p-4 bg-white dark:bg-slate-900 border-b dark:border-slate-800 shadow-sm">
                 <div className="h-10 w-10 rounded-full bg-gradient-to-tr from-blue-500 to-blue-600 flex items-center justify-center text-white font-bold mr-3">
                   {username[0]?.toUpperCase()}
                 </div>
@@ -247,51 +316,36 @@ export default function Home() {
                     Online
                   </p>
                 </div>
-                <button onClick={toggleTheme} className="md:hidden p-2 text-xl">
-                  {theme === "light" ? "🌙" : "☀️"}
-                </button>
               </header>
 
-              <main className="flex-1 overflow-y-auto p-4 space-y-4 bg-[#e5ddd5] dark:bg-slate-800/50 transition-colors">
+              <main className="flex-1 overflow-y-auto p-4 space-y-4 bg-[#e5ddd5] dark:bg-slate-800/50">
                 {messageList.map((msg, index) => (
                   <div
                     key={index}
                     className={`flex ${msg.author === username ? "justify-end" : "justify-start"}`}
                   >
                     <div
-                      className={`max-w-[70%] rounded-2xl px-3 py-2 shadow-sm ${
-                        msg.author === username
-                          ? "bg-[#dcf8c6] dark:bg-blue-600 dark:text-white rounded-tr-none"
-                          : "bg-white dark:bg-slate-700 dark:text-gray-100 rounded-tl-none"
-                      }`}
+                      className={`max-w-[70%] rounded-2xl px-3 py-2 shadow-sm ${msg.author === username ? "bg-[#dcf8c6] dark:bg-blue-600 dark:text-white rounded-tr-none" : "bg-white dark:bg-slate-700 dark:text-gray-100 rounded-tl-none"}`}
                     >
                       {msg.author !== username && (
                         <p className="text-[10px] font-bold text-blue-600 dark:text-blue-300 mb-1">
                           {msg.author}
                         </p>
                       )}
-
                       {msg.type === "sticker" ? (
-                        <div className="my-1 max-w-[140px] md:max-w-[180px] transition-transform hover:scale-105 active:scale-95">
-                          <img
-                            src={msg.message}
-                            alt="sticker"
-                            className="w-full h-auto object-contain drop-shadow-md"
-                          />
-                        </div>
+                        <img
+                          src={msg.message}
+                          alt="sticker"
+                          className="w-[140px] h-auto object-contain"
+                        />
                       ) : (
-                        <p className="text-[13px] md:text-sm leading-relaxed pr-2">
-                          {msg.message}
-                        </p>
+                        <p className="text-[13px] md:text-sm">{msg.message}</p>
                       )}
-
                       <div className="flex items-center justify-end gap-1 mt-1 opacity-70">
-                        <span className="text-[9px] text-gray-500 dark:text-gray-300">
-                          {msg.time}
-                        </span>
+                        <span className="text-[9px]">{msg.time}</span>
                         {msg.author === username && (
                           <span
-                            className={`text-xs ${msg.status === "read" ? "text-blue-500 dark:text-blue-200" : "text-gray-400 dark:text-gray-400"}`}
+                            className={`text-xs ${msg.status === "read" ? "text-blue-500" : "text-gray-400"}`}
                           >
                             {msg.status === "read" ? "✓✓" : "✓"}
                           </span>
@@ -303,9 +357,16 @@ export default function Home() {
                 <div ref={lastMessageRef} />
               </main>
 
-              <footer className="p-3 bg-white dark:bg-slate-900 border-t dark:border-slate-800 flex flex-col gap-2 relative transition-colors">
+              {/* Typing Indicator Display */}
+              {typingStatus && (
+                <div className="absolute bottom-20 left-6 text-xs italic text-gray-500 dark:text-gray-400 animate-pulse">
+                  {typingStatus}
+                </div>
+              )}
+
+              <footer className="p-3 bg-white dark:bg-slate-900 border-t dark:border-slate-800 flex flex-col gap-2 relative">
                 {showEmojiPicker && (
-                  <div className="absolute bottom-20 left-4 z-50 bg-white dark:bg-slate-900 shadow-2xl rounded-2xl border dark:border-slate-700 flex flex-col w-[320px] md:w-[350px] h-[450px] overflow-hidden">
+                  <div className="absolute bottom-20 left-4 z-50 bg-white dark:bg-slate-900 shadow-2xl rounded-2xl border dark:border-slate-700 w-[320px] md:w-[350px] h-[450px] overflow-hidden flex flex-col">
                     <div className="flex bg-gray-50 dark:bg-slate-800">
                       <button
                         onClick={() => setPickerMode("emoji")}
@@ -334,7 +395,7 @@ export default function Home() {
                             <div
                               key={i}
                               onClick={() => sendSticker(src)}
-                              className="aspect-square bg-gray-50 dark:bg-slate-800 rounded-xl flex items-center justify-center cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-700 transition-all"
+                              className="aspect-square bg-gray-50 dark:bg-slate-800 rounded-xl flex items-center justify-center cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-700"
                             >
                               <img
                                 src={src}
@@ -348,7 +409,6 @@ export default function Home() {
                     </div>
                   </div>
                 )}
-
                 <div className="flex items-center gap-2 bg-gray-100 dark:bg-slate-800 rounded-full px-4 py-2">
                   <button
                     onClick={() => setShowEmojiPicker(!showEmojiPicker)}
@@ -359,10 +419,10 @@ export default function Home() {
                   <input
                     type="text"
                     value={message}
-                    onChange={(e) => setMessage(e.target.value)}
+                    onChange={handleTyping}
                     onKeyDown={(e) => e.key === "Enter" && sendMessage()}
                     placeholder="Type a message..."
-                    className="flex-1 bg-transparent border-none outline-none text-sm text-gray-700 dark:text-white py-1"
+                    className="flex-1 bg-transparent border-none outline-none text-sm dark:text-white"
                   />
                   <button
                     onClick={sendMessage}
