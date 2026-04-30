@@ -1,112 +1,166 @@
+require("dotenv").config();
 const express = require("express");
-const app = express();
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
-const fs = require("fs");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const mongoose = require("mongoose");
 
+const app = express();
 app.use(cors());
 app.use(express.json());
 
-const SECRET_KEY = "your_super_secret_key_here";
-const USER_FILE = "./users.json";
-const MESSAGES_FILE = "./messages.json";
+// --- CONFIGURATION ---
+const PORT = process.env.PORT || 3001;
+const SECRET_KEY = process.env.JWT_SECRET || "dev_secret_key";
+const MONGO_URI = process.env.MONGO_URI;
 
-// Helpers
-const getUsers = () => {
-  try {
-    const data = fs.readFileSync(USER_FILE, "utf8");
-    return data ? JSON.parse(data) : [];
-  } catch (err) {
-    return [];
-  }
-};
+// --- DATABASE CONNECTION ---
+mongoose
+  .connect(MONGO_URI)
+  .then(() => console.log("✅ Connected to MongoDB Atlas"))
+  .catch((err) => console.error("❌ Connection Error:", err));
 
-const getMessages = () => {
-  try {
-    const data = fs.readFileSync(MESSAGES_FILE, "utf8");
-    return data ? JSON.parse(data) : [];
-  } catch (err) {
-    return [];
-  }
-};
+// --- MODELS ---
+const User = mongoose.model(
+  "User",
+  new mongoose.Schema({
+    username: { type: String, unique: true, required: true },
+    password: { type: String, required: true },
+  }),
+);
 
-const saveMessages = (messages) => {
-  fs.writeFileSync(MESSAGES_FILE, JSON.stringify(messages, null, 2));
-};
+const Message = mongoose.model(
+  "Message",
+  new mongoose.Schema({
+    author: String,
+    message: String,
+    type: String,
+    time: String,
+    status: { type: String, default: "delivered" },
+    createdAt: { type: Date, default: Date.now },
+  }),
+);
 
-// Auth Routes
+// --- AUTH ROUTES ---
+
 app.post("/signup", async (req, res) => {
-  const { username, password } = req.body;
-  const users = getUsers();
-  if (users.find((u) => u.username === username))
-    return res.status(400).json({ message: "Exists" });
-  const hashedPassword = await bcrypt.hash(password, 10);
-  users.push({ username, password: hashedPassword });
-  fs.writeFileSync(USER_FILE, JSON.stringify(users, null, 2));
-  res.status(201).json({ message: "Created" });
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res
+        .status(400)
+        .json({ message: "Username and password are required." });
+    }
+
+    const existingUser = await User.findOne({ username });
+    if (existingUser) {
+      return res
+        .status(400)
+        .json({ message: "Incorrect username or password." });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = new User({ username, password: hashedPassword });
+    await newUser.save();
+
+    res.status(201).json({ message: "Account created successfully!" });
+  } catch (err) {
+    res.status(500).json({ message: "Server error during registration." });
+  }
 });
 
 app.post("/login", async (req, res) => {
-  const { username, password } = req.body;
-  const users = getUsers();
-  const user = users.find((u) => u.username === username);
-  if (user && (await bcrypt.compare(password, user.password))) {
+  try {
+    const { username, password } = req.body;
+
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res
+        .status(401)
+        .json({ message: "Incorrect username or password." });
+    }
+
     const token = jwt.sign({ username: user.username }, SECRET_KEY, {
       expiresIn: "24h",
     });
-    res.json({ token, username: user.username });
-  } else {
-    res.status(401).json({ message: "Fail" });
+    res.json({ token, username: user.username, message: "Login successful!" });
+  } catch (err) {
+    res.status(500).json({ message: "Server error during login." });
   }
 });
 
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "http://localhost:3000" } });
-
 // --- SOCKET LOGIC ---
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    methods: ["GET", "POST"],
+  },
+});
+
+// Keep track of active users in memory
+let activeUsers = new Set();
+
 io.on("connection", (socket) => {
-  socket.on("join_chat", (username) => {
-    socket.username = username; // Attach username to socket session
-    const history = getMessages();
+  socket.on("join_chat", async (username) => {
+    socket.username = username;
+    activeUsers.add(username);
+
+    // Broadcast updated user list to everyone
+    io.emit("update_user_list", Array.from(activeUsers));
+
+    const history = await Message.find().sort({ createdAt: 1 }).limit(50);
     socket.emit("message_history", history);
   });
 
-  socket.on("send_message", (data) => {
-    const messages = getMessages();
-    const newMessage = {
-      ...data,
-      id: Date.now() + Math.random(), // Unique ID for read receipts
-      status: "delivered", // WhatsApp 'double gray check'
-    };
-    messages.push(newMessage);
-    saveMessages(messages);
-
-    io.emit("receive_message", newMessage); // Send to EVERYONE including sender
-  });
-
-  // --- READ RECEIPT LOGIC ---
-  socket.on("mark_as_read", (readerName) => {
-    let messages = getMessages();
-    let changed = false;
-
-    messages = messages.map((msg) => {
-      if (msg.author !== readerName && msg.status !== "read") {
-        msg.status = "read"; // WhatsApp 'double blue check'
-        changed = true;
-      }
-      return msg;
-    });
-
-    if (changed) {
-      saveMessages(messages);
-      io.emit("messages_updated", messages); // Tell everyone to turn their checks blue
+  socket.on("send_message", async (data) => {
+    try {
+      const newMessage = new Message({ ...data, status: "delivered" });
+      await newMessage.save();
+      io.emit("receive_message", newMessage);
+    } catch (err) {
+      console.error("Msg Error:", err);
     }
   });
 
-  socket.on("disconnect", () => {});
+  // Typing Indicator Logic
+  socket.on("typing", (data) => {
+    // Broadcast to everyone except the sender
+    socket.broadcast.emit("display_typing", data);
+  });
+
+  socket.on("mark_as_read", async (readerName) => {
+    try {
+      await Message.updateMany(
+        { author: { $ne: readerName }, status: { $ne: "read" } },
+        { $set: { status: "read" } },
+      );
+      const updatedHistory = await Message.find()
+        .sort({ createdAt: 1 })
+        .limit(50);
+      io.emit("messages_updated", updatedHistory);
+    } catch (err) {
+      console.error("Read Receipt Error:", err);
+    }
+  });
+
+  socket.on("disconnect", () => {
+    if (socket.username) {
+      activeUsers.delete(socket.username);
+      io.emit("update_user_list", Array.from(activeUsers));
+    }
+    console.log("User Disconnected:", socket.username);
+  });
 });
 
-server.listen(3001, () => console.log("RUNNING"));
+server.listen(PORT, () =>
+  console.log(`🚀 Production Server running on port ${PORT}`),
+);
