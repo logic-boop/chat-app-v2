@@ -297,7 +297,7 @@ export default function Home() {
                   onClick={handleLogout}
                   className="w-full text-red-500 font-bold hover:bg-red-50 dark:hover:bg-red-900/20 p-2 rounded-lg"
                 >
-                  🚪 Logout
+                  Logout
                 </button>
               </div>
             </div>
