@@ -312,7 +312,7 @@ export default function Home() {
                   <h3 className="font-bold text-gray-800 dark:text-white leading-tight">
                     {username}
                   </h3>
-                  <p className="text-[10px] text-green-500 font-medium">
+                  <p className="text-[10px] text-green-550 font-medium">
                     Online
                   </p>
                 </div>
