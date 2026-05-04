@@ -8,7 +8,15 @@ const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
 
 const app = express();
-app.use(cors());
+
+// --- DYNAMIC CORS FOR VERCEL & RENDER ---
+app.use(
+  cors({
+    origin: [process.env.FRONTEND_URL, "http://localhost:3000"].filter(Boolean),
+    credentials: true,
+  }),
+);
+
 app.use(express.json());
 
 // --- CONFIGURATION ---
@@ -48,52 +56,39 @@ const Message = mongoose.model(
 app.post("/signup", async (req, res) => {
   try {
     const { username, password } = req.body;
-
-    if (!username || !password) {
-      return res
-        .status(400)
-        .json({ message: "Username and password are required." });
-    }
+    if (!username || !password)
+      return res.status(400).json({ message: "Fields required." });
 
     const existingUser = await User.findOne({ username });
-    if (existingUser) {
-      return res
-        .status(400)
-        .json({ message: "Incorrect username or password." });
-    }
+    if (existingUser)
+      return res.status(400).json({ message: "Username taken." });
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = new User({ username, password: hashedPassword });
     await newUser.save();
 
-    res.status(201).json({ message: "Account created successfully!" });
+    res.status(201).json({ message: "Account created!" });
   } catch (err) {
-    res.status(500).json({ message: "Server error during registration." });
+    res.status(500).json({ message: "Server error." });
   }
 });
 
 app.post("/login", async (req, res) => {
   try {
     const { username, password } = req.body;
-
     const user = await User.findOne({ username });
-    if (!user) {
-      return res.status(404).json({ message: "User not found." });
-    }
+    if (!user) return res.status(404).json({ message: "User not found." });
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-      return res
-        .status(401)
-        .json({ message: "Incorrect username or password." });
-    }
+    if (!isPasswordValid)
+      return res.status(401).json({ message: "Invalid credentials." });
 
     const token = jwt.sign({ username: user.username }, SECRET_KEY, {
       expiresIn: "24h",
     });
     res.json({ token, username: user.username, message: "Login successful!" });
   } catch (err) {
-    res.status(500).json({ message: "Server error during login." });
+    res.status(500).json({ message: "Server error." });
   }
 });
 
@@ -101,26 +96,26 @@ app.post("/login", async (req, res) => {
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    origin: "*", // Allows Vercel's dynamic previews to connect easily
     methods: ["GET", "POST"],
   },
 });
 
-// Keep track of active users in memory
 let activeUsers = new Set();
 
 io.on("connection", (socket) => {
+  // 1. JOIN CHAT
   socket.on("join_chat", async (username) => {
     socket.username = username;
     activeUsers.add(username);
-
-    // Broadcast updated user list to everyone
     io.emit("update_user_list", Array.from(activeUsers));
 
+    // Fetch last 50 messages for high-speed initial load
     const history = await Message.find().sort({ createdAt: 1 }).limit(50);
     socket.emit("message_history", history);
   });
 
+  // 2. SEND MESSAGE
   socket.on("send_message", async (data) => {
     try {
       const newMessage = new Message({ ...data, status: "delivered" });
@@ -131,12 +126,16 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Typing Indicator Logic
+  // 3. TYPING INDICATOR (FIXED)
+  // We use broadcast so the sender doesn't see their own "typing" status
   socket.on("typing", (data) => {
-    // Broadcast to everyone except the sender
-    socket.broadcast.emit("display_typing", data);
+    socket.broadcast.emit("display_typing", {
+      user: data.user,
+      typing: data.typing,
+    });
   });
 
+  // 4. READ RECEIPTS
   socket.on("mark_as_read", async (readerName) => {
     try {
       await Message.updateMany(
@@ -152,15 +151,15 @@ io.on("connection", (socket) => {
     }
   });
 
+  // 5. DISCONNECT
   socket.on("disconnect", () => {
     if (socket.username) {
       activeUsers.delete(socket.username);
       io.emit("update_user_list", Array.from(activeUsers));
     }
-    console.log("User Disconnected:", socket.username);
   });
 });
 
 server.listen(PORT, () =>
-  console.log(`🚀 Production Server running on port ${PORT}`),
+  console.log(`🚀 NexusStream Backend Live on port ${PORT}`),
 );

@@ -2,8 +2,8 @@
 import { useEffect, useState, useRef } from "react";
 import { io } from "socket.io-client";
 import EmojiPicker, { Theme } from "emoji-picker-react";
+import { motion, AnimatePresence } from "framer-motion";
 
-// Fallback to localhost if the environment variable isn't set
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
 export default function Home() {
@@ -12,16 +12,16 @@ export default function Home() {
   const [authMode, setAuthMode] = useState("login");
   const [message, setMessage] = useState("");
   const [messageList, setMessageList] = useState([]);
-  const [activeUsers, setActiveUsers] = useState([]); // NEW: Online users state
-  const [typingStatus, setTypingStatus] = useState(""); // NEW: Typing indicator state
+  const [activeUsers, setActiveUsers] = useState([]);
+  const [typingStatus, setTypingStatus] = useState("");
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [pickerMode, setPickerMode] = useState("emoji");
-  const [theme, setTheme] = useState("light");
+  const [theme, setTheme] = useState("dark"); // Defaulting to Dark for that "Pro" feel
 
   const socket = useRef(null);
   const lastMessageRef = useRef(null);
-  const typingTimeoutRef = useRef(null); // Ref to manage typing timeout
+  const typingTimeoutRef = useRef(null);
 
   const stickers = [
     "/stickers/sticker1.png",
@@ -29,13 +29,10 @@ export default function Home() {
     "/stickers/sticker3.png",
   ];
 
-  // 1. PERSISTENCE & THEME: Check localStorage on mount
   useEffect(() => {
-    const savedTheme = localStorage.getItem("theme");
-    if (savedTheme === "dark") {
-      setTheme("dark");
-      document.documentElement.classList.add("dark");
-    }
+    const savedTheme = localStorage.getItem("theme") || "dark";
+    setTheme(savedTheme);
+    if (savedTheme === "dark") document.documentElement.classList.add("dark");
 
     const savedToken = localStorage.getItem("chat_token");
     const savedUser = localStorage.getItem("chat_user");
@@ -46,49 +43,36 @@ export default function Home() {
   }, []);
 
   const toggleTheme = () => {
-    if (theme === "light") {
-      setTheme("dark");
-      document.documentElement.classList.add("dark");
-      localStorage.setItem("theme", "dark");
-    } else {
-      setTheme("light");
-      document.documentElement.classList.remove("dark");
-      localStorage.setItem("theme", "light");
-    }
+    const newTheme = theme === "light" ? "dark" : "light";
+    setTheme(newTheme);
+    document.documentElement.classList.toggle("dark");
+    localStorage.setItem("theme", newTheme);
   };
 
-  // 2. SOCKET CONNECTION & EVENT LISTENERS
   useEffect(() => {
     if (!isLoggedIn) return;
-
     socket.current = io(API_URL);
-
     socket.current.emit("join_chat", username);
 
     socket.current.on("receive_message", (data) => {
       setMessageList((list) => [...list, data]);
-      setTypingStatus(""); // Clear typing if message received
+      setTypingStatus("");
     });
 
-    socket.current.on("update_user_list", (users) => {
-      setActiveUsers(users);
-    });
+    socket.current.on("update_user_list", (users) => setActiveUsers(users));
 
     socket.current.on("display_typing", (data) => {
-      if (data.typing) {
+      if (data.typing && data.user !== username) {
         setTypingStatus(`${data.user} is typing...`);
       } else {
         setTypingStatus("");
       }
     });
 
-    socket.current.on("message_history", (history) => {
-      setMessageList(history);
-    });
-
-    socket.current.on("messages_updated", (updatedHistory) => {
-      setMessageList(updatedHistory);
-    });
+    socket.current.on("message_history", (history) => setMessageList(history));
+    socket.current.on("messages_updated", (updatedHistory) =>
+      setMessageList(updatedHistory),
+    );
 
     return () => {
       socket.current?.disconnect();
@@ -97,40 +81,17 @@ export default function Home() {
 
   useEffect(() => {
     lastMessageRef.current?.scrollIntoView({ behavior: "smooth" });
-    if (isLoggedIn && messageList.length > 0) {
-      socket.current?.emit("mark_as_read", username);
-    }
-  }, [messageList, isLoggedIn, username]);
+    if (isLoggedIn) socket.current?.emit("mark_as_read", username);
+  }, [messageList]);
 
-  // Handle Typing logic (Debounced)
   const handleTyping = (e) => {
     setMessage(e.target.value);
-
     if (socket.current) {
       socket.current.emit("typing", { user: username, typing: true });
-
       clearTimeout(typingTimeoutRef.current);
       typingTimeoutRef.current = setTimeout(() => {
         socket.current.emit("typing", { user: username, typing: false });
-      }, 2000);
-    }
-  };
-
-  // 3. AUTH LOGIC
-  const handleSignup = async () => {
-    if (username && password) {
-      try {
-        const response = await fetch(`${API_URL}/signup`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username, password }),
-        });
-        const data = await response.json();
-        alert(data.message);
-        if (response.ok) setAuthMode("login");
-      } catch (err) {
-        alert("Signup failed.");
-      }
+      }, 1500);
     }
   };
 
@@ -146,25 +107,18 @@ export default function Home() {
         if (response.ok) {
           localStorage.setItem("chat_token", data.token);
           localStorage.setItem("chat_user", data.username);
-          setUsername(data.username);
           setIsLoggedIn(true);
         } else {
           alert(data.message);
         }
-      } catch (error) {
+      } catch {
         alert("Server error.");
       }
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem("chat_token");
-    localStorage.removeItem("chat_user");
-    window.location.reload();
-  };
-
   const sendMessage = () => {
-    if (message.trim() !== "" && socket.current) {
+    if (message.trim() && socket.current) {
       const messageData = {
         author: username,
         message: message,
@@ -174,7 +128,6 @@ export default function Home() {
           minute: "2-digit",
         }),
       };
-
       socket.current.emit("send_message", messageData);
       socket.current.emit("typing", { user: username, typing: false });
       setMessage("");
@@ -184,7 +137,7 @@ export default function Home() {
 
   const sendSticker = (stickerUrl) => {
     if (socket.current) {
-      const messageData = {
+      socket.current.emit("send_message", {
         author: username,
         message: stickerUrl,
         type: "sticker",
@@ -192,251 +145,260 @@ export default function Home() {
           hour: "2-digit",
           minute: "2-digit",
         }),
-      };
-
-      socket.current.emit("send_message", messageData);
+      });
       setShowEmojiPicker(false);
     }
   };
 
-  const onEmojiClick = (emojiObject) => {
-    setMessage((prev) => prev + emojiObject.emoji);
-  };
-
   return (
-    <div className={`${theme === "dark" ? "dark" : ""} h-screen w-full`}>
-      <div className="flex h-full w-full bg-slate-900 dark:bg-slate-950 overflow-hidden font-sans transition-colors duration-300">
-        {!isLoggedIn ? (
-          <div className="flex flex-1 items-center justify-center p-4">
-            <div className="w-full max-w-md space-y-8 rounded-2xl bg-white dark:bg-slate-900 p-10 shadow-2xl transition-colors">
-              <h2 className="text-3xl font-extrabold text-center text-gray-900 dark:text-white">
-                {authMode === "login" ? "Welcome Back" : "Create Account"}
-              </h2>
-              <div className="mt-8 space-y-4">
-                <input
-                  type="text"
-                  placeholder="Username"
-                  className="block w-full rounded-xl border dark:border-slate-700 bg-transparent dark:text-white p-3 outline-none"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                />
-                <input
-                  type="password"
-                  placeholder="Password"
-                  className="block w-full rounded-xl border dark:border-slate-700 bg-transparent dark:text-white p-3 outline-none"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-                <button
-                  onClick={authMode === "login" ? handleLogin : handleSignup}
-                  className="w-full rounded-xl bg-blue-600 py-3 font-semibold text-white transition-all hover:bg-blue-700"
-                >
-                  {authMode === "login" ? "Sign In" : "Register"}
-                </button>
-                <p
-                  className="text-center text-sm cursor-pointer text-blue-600 hover:underline"
-                  onClick={() =>
-                    setAuthMode(authMode === "login" ? "signup" : "login")
-                  }
-                >
-                  {authMode === "login"
-                    ? "New here? Sign up"
-                    : "Have an account? Log in"}
+    <div className="h-screen w-full bg-slate-50 dark:bg-[#0b0f1a] text-slate-900 dark:text-slate-100 transition-colors duration-500 overflow-hidden font-sans">
+      {!isLoggedIn ? (
+        <div className="flex h-full items-center justify-center p-6 bg-gradient-to-br from-blue-600 to-purple-700">
+          {/* Modern Login Card */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="w-full max-w-md bg-white/10 backdrop-blur-xl border border-white/20 p-10 rounded-3xl shadow-2xl"
+          >
+            <h2 className="text-4xl font-black text-center text-white mb-8">
+              NexusStream
+            </h2>
+            <div className="space-y-4">
+              <input
+                type="text"
+                placeholder="Username"
+                className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white placeholder-white/50 outline-none focus:ring-2 ring-blue-400 transition-all"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+              />
+              <input
+                type="password"
+                placeholder="Password"
+                className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white placeholder-white/50 outline-none focus:ring-2 ring-blue-400 transition-all"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <button
+                onClick={handleLogin}
+                className="w-full bg-blue-500 hover:bg-blue-400 py-4 rounded-2xl font-bold text-white shadow-lg shadow-blue-500/30 transition-all active:scale-95"
+              >
+                Enter Terminal
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      ) : (
+        <div className="flex h-full">
+          {/* Pro Sidebar */}
+          <aside className="hidden lg:flex w-80 flex-col bg-white dark:bg-[#0f172a] border-r dark:border-slate-800 shadow-xl z-20">
+            <div className="p-6 border-b dark:border-slate-800 flex items-center justify-between">
+              <span className="text-2xl font-black tracking-tighter bg-gradient-to-r from-blue-500 to-purple-500 bg-clip-text text-transparent">
+                NEXUS
+              </span>
+              <button
+                onClick={toggleTheme}
+                className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:rotate-12 transition-all"
+              >
+                {theme === "dark" ? "☀️" : "🌙"}
+              </button>
+            </div>
+            <div className="flex-1 p-4 overflow-y-auto space-y-6">
+              <div>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">
+                  Active Nodes — {activeUsers.length}
                 </p>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="flex w-full h-full bg-[#f0f2f5] dark:bg-slate-950">
-            {/* Sidebar */}
-            <div className="hidden md:flex w-80 flex-col bg-white dark:bg-slate-900 border-r dark:border-slate-800 transition-colors">
-              <div className="p-4 bg-blue-600 text-white font-bold text-xl flex items-center justify-between">
-                <span>💬 Messenger</span>
-                <button
-                  onClick={toggleTheme}
-                  className="p-1 hover:bg-blue-700 rounded-lg text-lg"
-                >
-                  {theme === "light" ? "🌙" : "☀️"}
-                </button>
-              </div>
-              <div className="flex-grow p-4 overflow-y-auto">
-                {/* Global Chat Item */}
-                <div className="flex items-center p-3 bg-gray-100 dark:bg-slate-800 rounded-xl mb-4">
-                  <div className="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center text-white font-bold mr-3">
-                    G
-                  </div>
-                  <div>
-                    <div className="font-bold text-sm text-gray-800 dark:text-gray-200">
-                      Global Chat
-                    </div>
-                    <div className="text-green-500 text-[10px] flex items-center gap-1">
-                      <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>{" "}
-                      Active Now
-                    </div>
-                  </div>
-                </div>
-
-                {/* Active Users List */}
-                <div className="space-y-2 mt-4">
-                  <p className="text-xs font-bold text-gray-400 uppercase px-2">
-                    Online — {activeUsers.length}
-                  </p>
-                  {activeUsers.map((u) => (
-                    <div
-                      key={u}
-                      className="flex items-center p-2 rounded-lg text-sm dark:text-gray-200"
-                    >
-                      <span className="w-2 h-2 bg-green-500 rounded-full mr-3"></span>
-                      {u === username ? `${u} (You)` : u}
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="p-4 border-t dark:border-slate-800">
-                <button
-                  onClick={handleLogout}
-                  className="w-full text-red-500 font-bold hover:bg-red-50 dark:hover:bg-red-900/20 p-2 rounded-lg"
-                >
-                  Logout
-                </button>
-              </div>
-            </div>
-
-            {/* Main Chat Area */}
-            <div className="flex flex-1 flex-col h-full relative">
-              <header className="flex items-center p-4 bg-white dark:bg-slate-900 border-b dark:border-slate-800 shadow-sm">
-                <div className="h-10 w-10 rounded-full bg-gradient-to-tr from-blue-500 to-blue-600 flex items-center justify-center text-white font-bold mr-3">
-                  {username[0]?.toUpperCase()}
-                </div>
-                <div className="flex-1">
-                  <h3 className="font-bold text-gray-800 dark:text-white leading-tight">
-                    {username}
-                  </h3>
-                  <p className="text-[10px] text-green-550 font-medium">
-                    Online
-                  </p>
-                </div>
-              </header>
-
-              <main className="flex-1 overflow-y-auto p-4 space-y-4 bg-[#e5ddd5] dark:bg-slate-800/50">
-                {messageList.map((msg, index) => (
+                {activeUsers.map((u) => (
                   <div
-                    key={index}
-                    className={`flex ${msg.author === username ? "justify-end" : "justify-start"}`}
+                    key={u}
+                    className="flex items-center gap-3 p-3 rounded-2xl hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group"
                   >
+                    <div className="relative">
+                      <div className="h-10 w-10 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center font-bold text-blue-500">
+                        {u[0].toUpperCase()}
+                      </div>
+                      <span className="absolute bottom-0 right-0 h-3 w-3 bg-green-500 border-2 border-white dark:border-[#0f172a] rounded-full"></span>
+                    </div>
+                    <span className="font-semibold text-sm">
+                      {u === username ? "You" : u}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="p-4 border-t dark:border-slate-800">
+              <button
+                onClick={() => window.location.reload()}
+                className="w-full py-3 rounded-xl text-red-500 font-bold hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+              >
+                Terminate Session
+              </button>
+            </div>
+          </aside>
+
+          {/* Main Chat Area */}
+          <div className="flex-1 flex flex-col relative bg-white dark:bg-[#0b0f1a]">
+            <header className="h-20 flex items-center px-8 border-b dark:border-slate-800/60 backdrop-blur-md bg-white/80 dark:bg-[#0b0f1a]/80 z-10">
+              <div className="flex items-center gap-4">
+                <div className="h-12 w-12 rounded-2xl bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center text-white shadow-lg shadow-blue-500/20 font-black text-xl">
+                  G
+                </div>
+                <div>
+                  <h2 className="font-bold text-lg">Main Deck</h2>
+                  <p className="text-xs text-green-500 font-bold animate-pulse">
+                    ● System Online
+                  </p>
+                </div>
+              </div>
+            </header>
+
+            <main className="flex-1 overflow-y-auto p-6 space-y-6 scrollbar-hide bg-slate-50/50 dark:bg-transparent">
+              {messageList.map((msg, index) => {
+                const isMe = msg.author === username;
+                return (
+                  <motion.div
+                    initial={{ opacity: 0, x: isMe ? 20 : -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    key={index}
+                    className={`flex ${isMe ? "justify-end" : "justify-start"} items-end gap-3`}
+                  >
+                    {!isMe && (
+                      <div className="h-8 w-8 rounded-full bg-slate-200 dark:bg-slate-800 flex items-center justify-center text-[10px] font-bold">
+                        {msg.author[0]}
+                      </div>
+                    )}
                     <div
-                      className={`max-w-[70%] rounded-2xl px-3 py-2 shadow-sm ${msg.author === username ? "bg-[#dcf8c6] dark:bg-blue-600 dark:text-white rounded-tr-none" : "bg-white dark:bg-slate-700 dark:text-gray-100 rounded-tl-none"}`}
+                      className={`relative max-w-[70%] p-4 rounded-3xl shadow-sm ${isMe ? "bg-blue-600 text-white rounded-br-none" : "bg-white dark:bg-slate-800 dark:border dark:border-slate-700 rounded-bl-none"}`}
                     >
-                      {msg.author !== username && (
-                        <p className="text-[10px] font-bold text-blue-600 dark:text-blue-300 mb-1">
+                      {!isMe && (
+                        <p className="text-[10px] font-black uppercase opacity-50 mb-1">
                           {msg.author}
                         </p>
                       )}
                       {msg.type === "sticker" ? (
-                        <img
-                          src={msg.message}
-                          alt="sticker"
-                          className="w-[140px] h-auto object-contain"
-                        />
+                        <img src={msg.message} className="w-32 h-auto" />
                       ) : (
-                        <p className="text-[13px] md:text-sm">{msg.message}</p>
+                        <p className="text-sm leading-relaxed">{msg.message}</p>
                       )}
-                      <div className="flex items-center justify-end gap-1 mt-1 opacity-70">
+                      <div className="flex items-center justify-end gap-1 mt-2 opacity-40">
                         <span className="text-[9px]">{msg.time}</span>
-                        {msg.author === username && (
-                          <span
-                            className={`text-xs ${msg.status === "read" ? "text-blue-500" : "text-gray-400"}`}
-                          >
+                        {isMe && (
+                          <span className="text-xs">
                             {msg.status === "read" ? "✓✓" : "✓"}
                           </span>
                         )}
                       </div>
                     </div>
-                  </div>
-                ))}
-                <div ref={lastMessageRef} />
-              </main>
+                  </motion.div>
+                );
+              })}
+              <div ref={lastMessageRef} />
+            </main>
 
-              {/* Typing Indicator Display */}
+            {/* Floating Typing Indicator */}
+            <AnimatePresence>
               {typingStatus && (
-                <div className="absolute bottom-20 left-6 text-xs italic text-gray-500 dark:text-gray-400 animate-pulse">
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  className="absolute bottom-28 left-8 bg-white dark:bg-slate-800 px-4 py-2 rounded-full shadow-xl border dark:border-slate-700 text-[10px] font-bold text-blue-500 italic"
+                >
                   {typingStatus}
-                </div>
+                </motion.div>
               )}
+            </AnimatePresence>
 
-              <footer className="p-3 bg-white dark:bg-slate-900 border-t dark:border-slate-800 flex flex-col gap-2 relative">
-                {showEmojiPicker && (
-                  <div className="absolute bottom-20 left-4 z-50 bg-white dark:bg-slate-900 shadow-2xl rounded-2xl border dark:border-slate-700 w-[320px] md:w-[350px] h-[450px] overflow-hidden flex flex-col">
-                    <div className="flex bg-gray-50 dark:bg-slate-800">
-                      <button
-                        onClick={() => setPickerMode("emoji")}
-                        className={`flex-1 py-3 text-xs font-bold ${pickerMode === "emoji" ? "bg-white dark:bg-slate-900 text-blue-600 border-b-2 border-blue-600" : "text-gray-400"}`}
-                      >
-                        EMOJIS
-                      </button>
-                      <button
-                        onClick={() => setPickerMode("sticker")}
-                        className={`flex-1 py-3 text-xs font-bold ${pickerMode === "sticker" ? "bg-white dark:bg-slate-900 text-blue-600 border-b-2 border-blue-600" : "text-gray-400"}`}
-                      >
-                        STICKERS
-                      </button>
-                    </div>
-                    <div className="flex-1 overflow-y-auto">
-                      {pickerMode === "emoji" ? (
-                        <EmojiPicker
-                          onEmojiClick={onEmojiClick}
-                          width="100%"
-                          height="100%"
-                          theme={theme === "dark" ? Theme.DARK : Theme.LIGHT}
-                        />
-                      ) : (
-                        <div className="grid grid-cols-3 gap-3 p-4">
-                          {stickers.map((src, i) => (
-                            <div
-                              key={i}
-                              onClick={() => sendSticker(src)}
-                              className="aspect-square bg-gray-50 dark:bg-slate-800 rounded-xl flex items-center justify-center cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-700"
-                            >
-                              <img
-                                src={src}
-                                alt={`sticker-${i}`}
-                                className="w-[85%] h-[85%] object-contain"
-                              />
-                            </div>
-                          ))}
+            {/* Glassmorphic Input Bar */}
+            <footer className="p-6">
+              <div className="max-w-4xl mx-auto relative">
+                <AnimatePresence>
+                  {showEmojiPicker && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.9 }}
+                      className="absolute bottom-24 left-0 z-50"
+                    >
+                      <div className="bg-white dark:bg-slate-900 shadow-2xl rounded-3xl border dark:border-slate-700 overflow-hidden flex flex-col w-[350px] h-[450px]">
+                        <div className="flex p-2 gap-2 bg-slate-50 dark:bg-slate-800">
+                          <button
+                            onClick={() => setPickerMode("emoji")}
+                            className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all ${pickerMode === "emoji" ? "bg-white dark:bg-slate-900 shadow-sm" : "opacity-50"}`}
+                          >
+                            EMOJI
+                          </button>
+                          <button
+                            onClick={() => setPickerMode("sticker")}
+                            className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all ${pickerMode === "sticker" ? "bg-white dark:bg-slate-900 shadow-sm" : "opacity-50"}`}
+                          >
+                            STICKER
+                          </button>
                         </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-                <div className="flex items-center gap-2 bg-gray-100 dark:bg-slate-800 rounded-full px-4 py-2">
+                        <div className="flex-1">
+                          {pickerMode === "emoji" ? (
+                            <EmojiPicker
+                              onEmojiClick={(e) =>
+                                setMessage((p) => p + e.emoji)
+                              }
+                              theme={
+                                theme === "dark" ? Theme.DARK : Theme.LIGHT
+                              }
+                              width="100%"
+                              height="100%"
+                            />
+                          ) : (
+                            <div className="grid grid-cols-3 gap-2 p-4">
+                              {stickers.map((s, i) => (
+                                <img
+                                  key={i}
+                                  src={s}
+                                  onClick={() => sendSticker(s)}
+                                  className="cursor-pointer hover:scale-110 transition-transform p-2 bg-slate-50 dark:bg-slate-800 rounded-xl"
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                <div className="flex items-center gap-4 bg-white dark:bg-slate-800/50 backdrop-blur-2xl border dark:border-slate-700 p-2 pl-6 rounded-3xl shadow-2xl ring-1 ring-black/5">
                   <button
                     onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-                    className="text-xl"
+                    className="text-2xl hover:scale-125 transition-transform"
                   >
-                    😊
+                    ✨
                   </button>
                   <input
                     type="text"
                     value={message}
                     onChange={handleTyping}
                     onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-                    placeholder="Type a message..."
-                    className="flex-1 bg-transparent border-none outline-none text-sm dark:text-white"
+                    placeholder="Transmit data..."
+                    className="flex-1 bg-transparent outline-none py-3 text-sm"
                   />
                   <button
                     onClick={sendMessage}
                     disabled={!message.trim()}
-                    className="text-blue-600 dark:text-blue-400 font-bold text-sm px-2 disabled:opacity-30"
+                    className="bg-blue-600 hover:bg-blue-500 disabled:opacity-20 text-white p-3 px-6 rounded-2xl font-bold text-xs transition-all flex items-center gap-2"
                   >
                     SEND
+                    <svg
+                      className="w-4 h-4 rotate-90"
+                      fill="currentColor"
+                      viewBox="0 0 20 20"
+                    >
+                      <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
+                    </svg>
                   </button>
                 </div>
-              </footer>
-            </div>
+              </div>
+            </footer>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
