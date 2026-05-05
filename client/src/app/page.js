@@ -10,6 +10,7 @@ export default function Home() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [authMode, setAuthMode] = useState("login");
+  const [isLoading, setIsLoading] = useState(false); // NEW: Loading state for buttons
   const [message, setMessage] = useState("");
   const [messageList, setMessageList] = useState([]);
   const [activeUsers, setActiveUsers] = useState([]);
@@ -17,7 +18,7 @@ export default function Home() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [pickerMode, setPickerMode] = useState("emoji");
-  const [theme, setTheme] = useState("dark"); // Defaulting to Dark for that "Pro" feel
+  const [theme, setTheme] = useState("dark");
 
   const socket = useRef(null);
   const lastMessageRef = useRef(null);
@@ -82,7 +83,7 @@ export default function Home() {
   useEffect(() => {
     lastMessageRef.current?.scrollIntoView({ behavior: "smooth" });
     if (isLoggedIn) socket.current?.emit("mark_as_read", username);
-  }, [messageList]);
+  }, [messageList, isLoggedIn, username]);
 
   const handleTyping = (e) => {
     setMessage(e.target.value);
@@ -95,25 +96,48 @@ export default function Home() {
     }
   };
 
+  // --- AUTH LOGIC WITH LOADING STATES ---
+
+  const handleSignup = async () => {
+    if (!username || !password) return alert("Please fill all fields");
+    setIsLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/signup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await response.json();
+      alert(data.message);
+      if (response.ok) setAuthMode("login");
+    } catch {
+      alert("Signup failed.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleLogin = async () => {
-    if (username && password) {
-      try {
-        const response = await fetch(`${API_URL}/login`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username, password }),
-        });
-        const data = await response.json();
-        if (response.ok) {
-          localStorage.setItem("chat_token", data.token);
-          localStorage.setItem("chat_user", data.username);
-          setIsLoggedIn(true);
-        } else {
-          alert(data.message);
-        }
-      } catch {
-        alert("Server error.");
+    if (!username || !password) return alert("Please fill all fields");
+    setIsLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await response.json();
+      if (response.ok) {
+        localStorage.setItem("chat_token", data.token);
+        localStorage.setItem("chat_user", data.username);
+        setIsLoggedIn(true);
+      } else {
+        alert(data.message);
       }
+    } catch {
+      alert("Server error.");
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -154,7 +178,6 @@ export default function Home() {
     <div className="h-screen w-full bg-slate-50 dark:bg-[#0b0f1a] text-slate-900 dark:text-slate-100 transition-colors duration-500 overflow-hidden font-sans">
       {!isLoggedIn ? (
         <div className="flex h-full items-center justify-center p-6 bg-gradient-to-br from-blue-600 to-purple-700">
-          {/* Modern Login Card */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -165,25 +188,46 @@ export default function Home() {
             </h2>
             <div className="space-y-4">
               <input
+                disabled={isLoading}
                 type="text"
                 placeholder="Username"
-                className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white placeholder-white/50 outline-none focus:ring-2 ring-blue-400 transition-all"
+                className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white placeholder-white/50 outline-none focus:ring-2 ring-blue-400 transition-all disabled:opacity-50"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
               />
               <input
+                disabled={isLoading}
                 type="password"
                 placeholder="Password"
-                className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white placeholder-white/50 outline-none focus:ring-2 ring-blue-400 transition-all"
+                className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white placeholder-white/50 outline-none focus:ring-2 ring-blue-400 transition-all disabled:opacity-50"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />
+
               <button
-                onClick={handleLogin}
-                className="w-full bg-blue-500 hover:bg-blue-400 py-4 rounded-2xl font-bold text-white shadow-lg shadow-blue-500/30 transition-all active:scale-95"
+                onClick={authMode === "login" ? handleLogin : handleSignup}
+                disabled={isLoading}
+                className="w-full bg-blue-500 hover:bg-blue-400 py-4 rounded-2xl font-bold text-white shadow-lg shadow-blue-500/30 transition-all active:scale-95 disabled:bg-blue-800 disabled:cursor-not-allowed"
               >
-                Enter Terminal
+                {isLoading
+                  ? authMode === "login"
+                    ? "Logging in..."
+                    : "Signing up..."
+                  : authMode === "login"
+                    ? "Log in"
+                    : "Sign up"}
               </button>
+
+              <p
+                className="text-center text-sm text-white/70 cursor-pointer hover:text-white transition-colors"
+                onClick={() =>
+                  setAuthMode(authMode === "login" ? "signup" : "login")
+                }
+              >
+                {authMode === "login"
+                  ? "New node? Create account"
+                  : "Existing node? Sign in"}
+              </p>
             </div>
           </motion.div>
         </div>
@@ -227,7 +271,10 @@ export default function Home() {
             </div>
             <div className="p-4 border-t dark:border-slate-800">
               <button
-                onClick={() => window.location.reload()}
+                onClick={() => {
+                  localStorage.clear();
+                  window.location.reload();
+                }}
                 className="w-full py-3 rounded-xl text-red-500 font-bold hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
               >
                 Terminate Session
@@ -294,7 +341,6 @@ export default function Home() {
               <div ref={lastMessageRef} />
             </main>
 
-            {/* Floating Typing Indicator */}
             <AnimatePresence>
               {typingStatus && (
                 <motion.div
@@ -308,7 +354,6 @@ export default function Home() {
               )}
             </AnimatePresence>
 
-            {/* Glassmorphic Input Bar */}
             <footer className="p-6">
               <div className="max-w-4xl mx-auto relative">
                 <AnimatePresence>
