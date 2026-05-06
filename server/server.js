@@ -161,5 +161,5 @@ io.on("connection", (socket) => {
 });
 
 server.listen(PORT, () =>
-  console.log(`🚀 NexusStream Backend Live on port ${PORT}`),
+  console.log(`🚀 NexusStream Backend is Live on port ${PORT}`),
 );
