@@ -67,7 +67,7 @@ app.post("/signup", async (req, res) => {
     const newUser = new User({ username, password: hashedPassword });
     await newUser.save();
 
-    res.status(201).json({ message: "Account created!" });
+    res.status(201).json({ message: "Account created!!" });
   } catch (err) {
     res.status(500).json({ message: "Server error." });
   }
